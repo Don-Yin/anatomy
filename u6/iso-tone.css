@@ -1,0 +1,21 @@
+.iso{
+  --anatomy-base-paper:var(--anatomy-paper);--anatomy-base-face:var(--anatomy-face);--anatomy-base-top:var(--anatomy-top);
+  --anatomy-base-shade-0:var(--anatomy-shade-0);--anatomy-base-shade-1:var(--anatomy-shade-1);--anatomy-base-shade-2:var(--anatomy-shade-2);--anatomy-base-shade-3:var(--anatomy-shade-3);
+  --anatomy-base-lit-top:var(--anatomy-lit-top);--anatomy-base-lit-shade:var(--anatomy-lit-shade);
+  --anatomy-surface-mid:10%;--anatomy-surface-hi:24%;--anatomy-dim-mix:78%;
+  --anatomy-dim-hi:var(--anatomy-lo);--anatomy-dim-mid:var(--anatomy-faint);--anatomy-dim-lo:var(--anatomy-faint);--anatomy-dim-lit:var(--anatomy-mid);--anatomy-dim-dot:var(--anatomy-mid);
+}
+[data-surface="mid"]{--tone-to:var(--anatomy-hi);--tone-k:var(--anatomy-surface-mid)}
+[data-surface="hi"]{--tone-to:var(--anatomy-hi);--tone-k:var(--anatomy-surface-hi)}
+[data-dim]{--tone-to:var(--anatomy-card);--tone-k:var(--anatomy-dim-mix);--anatomy-hi:var(--anatomy-dim-hi);--anatomy-mid:var(--anatomy-dim-mid);--anatomy-lo:var(--anatomy-dim-lo);--anatomy-lit:var(--anatomy-dim-lit);--anatomy-dot:var(--anatomy-dim-dot)}
+:is([data-surface],[data-dim]){
+  --anatomy-paper:color-mix(in srgb,var(--anatomy-base-paper),var(--tone-to) var(--tone-k));
+  --anatomy-face:color-mix(in srgb,var(--anatomy-base-face),var(--tone-to) var(--tone-k));
+  --anatomy-top:color-mix(in srgb,var(--anatomy-base-top),var(--tone-to) var(--tone-k));
+  --anatomy-shade-0:color-mix(in srgb,var(--anatomy-base-shade-0),var(--tone-to) var(--tone-k));
+  --anatomy-shade-1:color-mix(in srgb,var(--anatomy-base-shade-1),var(--tone-to) var(--tone-k));
+  --anatomy-shade-2:color-mix(in srgb,var(--anatomy-base-shade-2),var(--tone-to) var(--tone-k));
+  --anatomy-shade-3:color-mix(in srgb,var(--anatomy-base-shade-3),var(--tone-to) var(--tone-k));
+  --anatomy-lit-top:color-mix(in srgb,var(--anatomy-base-lit-top),var(--tone-to) var(--tone-k));
+  --anatomy-lit-shade:color-mix(in srgb,var(--anatomy-base-lit-shade),var(--tone-to) var(--tone-k));
+}

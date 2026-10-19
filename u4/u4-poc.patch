@@ -1,0 +1,74 @@
+diff --git a/scripts/line-ends.mjs b/scripts/line-ends.mjs
+index 50c42c1..3fc63e7 100644
+--- a/scripts/line-ends.mjs
++++ b/scripts/line-ends.mjs
+@@ -1,4 +1,4 @@
+-function lineEnds({ select = null, tolerance = 1, root: rootSlack = 2, mark = 7, least = 0.3, cover = 0.5, show = false } = {}) {
++function lineEnds({ select = null, tolerance = 1, root: rootSlack = 2, mark = 7, markWorld = 4.5, least = 0.3, cover = 0.5, show = false } = {}) {
+   const plate = select == null ? document.querySelector(".iso-plate") || document.body : document.querySelector(select);
+   if (!plate) throw new Error(`Line target not found: ${select}`);
+   const box = plate.getBoundingClientRect();
+@@ -166,6 +166,7 @@ function lineEnds({ select = null, tolerance = 1, root: rootSlack = 2, mark = 7,
+   };
+   const lines = [];
+   let scale = 1;
++  let markLimit = mark;
+   for (const el of shapes) {
+     const cs = getComputedStyle(el);
+     const alpha = opacityOf(el);
+@@ -196,7 +197,10 @@ function lineEnds({ select = null, tolerance = 1, root: rootSlack = 2, mark = 7,
+     if (!stroked) continue;
+     const owner = el.closest("svg");
+     const viewCtm = owner && owner.getScreenCTM();
+-    if (viewCtm) scale = Math.hypot(viewCtm.a, viewCtm.b) || scale;
++    if (viewCtm) {
++      scale = Math.hypot(viewCtm.a, viewCtm.b) || scale;
++      markLimit = Number(owner.getAttribute("data-scale")) * markWorld || mark;
++    }
+     const curveTolerance = 0.15 / Math.max(1, Math.hypot(ctm.a, ctm.b, ctm.c, ctm.d));
+     const subpaths = geometryOf(el, curveTolerance).map((sub, index) => ({ ...sub, index, flat: sub.points.map(map) }));
+     subpaths.forEach((sub) => {
+@@ -289,7 +293,7 @@ function lineEnds({ select = null, tolerance = 1, root: rootSlack = 2, mark = 7,
+         result[end] = hidden(line.el, p) ? 0 : clearance(line, sub, end, p, Math.max(slack, rooted));
+       }
+       const straight = sub.flat.length === 2 || sub.flat.every((q) => segmentDistance(q, first, last) < 0.15 * scale);
+-      const isMark = straight && length <= mark * scale;
++      const isMark = straight && length <= markLimit * scale;
+       const fail = (end) => result[end] !== undefined && result[end] > slack;
+       let bad = [];
+       if (isMark) {
+diff --git a/scripts/lines-mark-scale.test.mjs b/scripts/lines-mark-scale.test.mjs
+new file mode 100644
+index 0000000..8e34991
+--- /dev/null
++++ b/scripts/lines-mark-scale.test.mjs
+@@ -0,0 +1,29 @@
++import assert from "node:assert/strict";
++import { execFile } from "node:child_process";
++import { mkdtemp, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { promisify } from "node:util";
++import { fileURLToPath } from "node:url";
++import test from "node:test";
++
++const execute = promisify(execFile);
++const lines = fileURLToPath(new URL("lines.mjs", import.meta.url));
++
++for (const [name, attributes, length, floats] of [
++  ["a tick of 6 viewBox px is a mark without a stated scale", "", 6, false],
++  ["a tick of 12 viewBox px is not a mark without a stated scale", "", 12, true],
++  ["12 viewBox px at 3 px per world unit is a 4 unit mark", 'data-scale="3"', 12, false],
++  ["12 viewBox px at 1.5 px per world unit is an 8 unit line", 'data-scale="1.5"', 12, true],
++]) test(name, async () => {
++  const directory = await mkdtemp(join(tmpdir(), "anatomy-mark-scale-"));
++  try {
++    const page = join(directory, "figure.html");
++    await writeFile(page, `<!doctype html><svg id="figure" ${attributes} width="200" height="100" viewBox="0 0 200 100"><path d="M0 50H200" fill="none" stroke="black"/><path class="iso-line" fill="none" stroke="black" d="M50 50L50 ${50 - length}"/></svg>`);
++    let result;
++    try { result = { code: 0, ...await execute(process.execPath, [lines, page, "--select", "#figure", "--wait", "0"], { timeout: 30000 }) }; }
++    catch (error) { result = { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
++    assert.equal(result.code, floats ? 1 : 0, result.stderr);
++    assert.match(result.stdout, new RegExp(`line ends: ${floats ? 1 : 0} of 2`));
++  } finally { await rm(directory, { recursive: true, force: true }); }
++});

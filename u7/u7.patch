@@ -1,0 +1,471 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 18e1aef..f3152f5 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,6 +6,7 @@ All notable changes to Anatomy are recorded here. The format follows [Keep a Cha
+ 
+ ### Added
+ 
++- `lathe` takes `from` and `to` (the angles `arcOf` already uses) and turns only that part of the revolution, with the flat cut faces where it was opened: a ball with a wedge out of it, a half capsule, a cylinder with a quarter cut away. A full turn is unchanged, so every example except the arcade cabinet (which inlines `lathe.mjs`) rebuilds byte-identical.
+ - Printable sheets. `scripts/print.mjs` freezes poses of a built figure as vector stills (WebGL as a 2× PNG) and prints one A4 or US Letter PDF in three formats: `poster` (one page: big name, numbers, pinned figure and a line per part), `drawing` (one page: parts list, specification, inset and a strip of lit steps) and `detailed` (two pages: pinned figure with round close-ups, then large lit steps with text and the why). Parts are CSS selectors over the live SVG, so any figure can be printed; crowded pins spread apart with hairline leaders, and the script fails when a format runs past its pages. `examples/raptor-engine/sheet.mjs` and `examples/arcade-cabinet/sheet.mjs` are the references, `references/print.md` the guide.
+ - Antigravity support, alongside Claude Code, OpenCode and Codex. Documented user and project installation paths in the README and CONTRIBUTING, updated SKILL.md compatibility, and added Antigravity to the bug report form.
+ - MiniMax Code support. The README and CONTRIBUTING document its user (`~/.minimax/skills`) and project (`.minimax/skills`) folders and `npx skills add ... -a minimax-code`, SKILL.md lists it, and the bug report form offers it.
+diff --git a/kit/lathe.mjs b/kit/lathe.mjs
+index b2fb74d..0d16ef3 100644
+--- a/kit/lathe.mjs
++++ b/kit/lathe.mjs
+@@ -133,6 +133,50 @@ function groupsOf(keys) {
+   return out;
+ }
+ 
++function openGroupsOf(keys) {
++  const out = [];
++  let current = null;
++  keys.forEach((key, index) => {
++    if (key === null) current = null;
++    else if (current && current.key === key) current.run.push(index + 1);
++    else out.push((current = { key, run: [index, index + 1] }));
++  });
++  return out;
++}
++
++function clipArcs(arcs, from, to) {
++  const pieces = [];
++  for (const arc of arcs) {
++    for (let turn = -2; turn <= 2; turn++) {
++      const lo = Math.max(arc.from + turn * TAU, from);
++      const hi = Math.min(arc.to + turn * TAU, to);
++      if (hi - lo > 1e-9) pieces.push({ ...arc, from: lo, to: hi });
++    }
++  }
++  pieces.sort((a, b) => a.from - b.from);
++  const merged = [];
++  for (const piece of pieces) {
++    const last = merged[merged.length - 1];
++    if (last && last.tone === piece.tone && piece.from - last.to < 1e-9) last.to = piece.to;
++    else merged.push(piece);
++  }
++  return merged;
++}
++
++function minusArcs(arcs, taken) {
++  return arcs.flatMap(([lo, hi]) => {
++    const out = [];
++    let at = lo;
++    for (const [from, to] of taken) {
++      if (to <= at || from >= hi) continue;
++      if (from > at) out.push([at, from]);
++      at = Math.max(at, to);
++    }
++    if (hi > at) out.push([at, hi]);
++    return out;
++  });
++}
++
+ export const stepsFor = (radius, least = 16, most = 112, scale = 0) => Math.max(least, Math.min(most, scale ? Math.ceil((TAU * radius * scale) / 3) : Math.round((radius * 1.3) / 4) * 4));
+ 
+ function chains(edges) {
+@@ -283,7 +327,8 @@ function curved(meridian, P, segments, { error = 0.2, depth = 6 } = {}) {
+   return out;
+ }
+ 
+-function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, steps = 48, error = 0.35, depth: deepest = 8, fineness = 0.1 } = {}) {
++function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, steps = 48, error = 0.35, depth: deepest = 8, fineness = 0.1, from = 0, to = TAU } = {}) {
++  const part = to - from < TAU - 1e-9;
+   const V = viewOf(P);
+   const L = lightOf(P);
+   const view = { a: dot3(F.a, V), flat: Math.hypot(dot3(F.u, V), dot3(F.v, V)), phi: Math.atan2(dot3(F.v, V), dot3(F.u, V)) };
+@@ -343,11 +388,12 @@ function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, ste
+   const levelOf = (i, u) => {
+     const [nr, na] = normalAt(i, u);
+     const groups = new Map();
+-    for (const arc of labelledArcs(nr, na, view, light, faces[i][0], faces[i][1])) {
++    const arcs = labelledArcs(nr, na, view, light, faces[i][0], faces[i][1]);
++    for (const arc of part ? clipArcs(arcs, from, to) : arcs) {
+       if (!groups.has(arc.tone)) groups.set(arc.tone, []);
+       groups.get(arc.tone).push(arc);
+     }
+-    for (const list of groups.values()) list.sort((x, y) => centreOf(x, light.phi) - centreOf(y, light.phi));
++    for (const list of groups.values()) list.sort(part ? (x, y) => x.from - y.from : (x, y) => centreOf(x, light.phi) - centreOf(y, light.phi));
+     return { i, u, groups };
+   };
+   const same = (x, y) => {
+@@ -356,6 +402,7 @@ function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, ste
+     return true;
+   };
+   const align = (reference, arc) => {
++    if (part) return arc;
+     const out = { ...arc };
+     const centre = (reference.from + reference.to) / 2;
+     while ((out.from + out.to) / 2 - centre > Math.PI) {
+@@ -528,8 +575,10 @@ function surfaceOf(side, F, P, rims, { samples = 96, slope = null } = {}) {
+ 
+ export const softOf = (meridian) => meridian.some((point) => Boolean(point[2]));
+ 
+-export function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r]) => r)), 32, 160, scaleOf(P)), fill = "auto", hole = null, bevel = 0, rims = "all", smooth: asked = "auto", waist = 0.5 } = {}) {
+-  const smooth = asked === "auto" ? softOf(meridian) : asked;
++export function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r]) => r)), 32, 160, scaleOf(P)), fill = "auto", hole = null, bevel = 0, rims = "all", smooth: asked = "auto", waist = 0.5, from = 0, to = TAU } = {}) {
++  const part = to - from < TAU - 1e-9;
++  if (part && (to <= from || hole)) throw new Error("lathe: from must be below to, and a hole does not combine with a partial turn");
++  const smooth = part ? (asked && asked !== "auto" ? asked : true) : asked === "auto" ? softOf(meridian) : asked;
+   const V = viewOf(P);
+   const L = lightOf(P);
+   const aV = dot3(F.a, V);
+@@ -538,13 +587,14 @@ export function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.ma
+   const aL = dot3(F.a, L);
+   const uL = dot3(F.u, L);
+   const vL = dot3(F.v, L);
+-  const n = steps;
++  const n = part ? Math.max(4, Math.ceil((steps * (to - from)) / TAU)) : steps;
++  const turn = (j) => from + (j / n) * (to - from);
+   const m = meridian.length;
+-  const rings = meridian.map(([s, r]) => Array.from({ length: n }, (_, j) => iso(pointOf(F, s, r, (j / n) * TAU), P)));
++  const rings = meridian.map(([s, r]) => Array.from({ length: part ? n + 1 : n }, (_, j) => iso(pointOf(F, s, r, turn(j)), P)));
+   const midC = [];
+   const midS = [];
+   for (let j = 0; j < n; j++) {
+-    const t = ((j + 0.5) / n) * TAU;
++    const t = turn(j + 0.5);
+     midC.push(Math.cos(t));
+     midS.push(Math.sin(t));
+   }
+@@ -572,12 +622,12 @@ export function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.ma
+   }
+   const buckets = [[], [], [], [], []];
+   const all = [];
+-  const smoothed = smooth ? smoothRows(meridian, F, P, { steps, ...(smooth === true ? {} : smooth) }) : null;
++  const smoothed = smooth ? smoothRows(meridian, F, P, { steps, from, to, ...(smooth === true ? {} : smooth) }) : null;
+   if (smoothed) smoothed.forEach((list, tone) => list.forEach((d) => (buckets[tone].push(d), all.push(d))));
+   for (let i = 0; i < m - 1; i++) {
+     if (smoothed && Math.abs(meridian[i + 1][0] - meridian[i][0]) > 1e-9) continue;
+     const keys = seen[i].map((visible, j) => (visible ? tones[i][j] : null));
+-    for (const { key, run } of groupsOf(keys)) {
++    for (const { key, run } of (part ? openGroupsOf : groupsOf)(keys)) {
+       const a = run.map((j) => rings[i][j]);
+       const b = run.map((j) => rings[i + 1][j]).reverse();
+       const d = pathOf(oriented([...a, ...b]), true);
+@@ -587,9 +637,9 @@ export function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.ma
+   }
+   const phi = Math.atan2(vV, uV);
+   const flatV = Math.hypot(uV, vV);
+-  const rangeOf = (i) => {
+-    const ds = meridian[i + 1][0] - meridian[i][0];
+-    const dr = meridian[i + 1][1] - meridian[i][1];
++  const rangeOf = (i, points = meridian) => {
++    const ds = points[i + 1][0] - points[i][0];
++    const dr = points[i + 1][1] - points[i][1];
+     if (Math.hypot(ds, dr) < 1e-9) return null;
+     if (Math.abs(ds) < 1e-9 || flatV < 1e-9) return -dr * aV > 1e-9 ? [-1, 1] : null;
+     const c = (dr * aV) / (ds * flatV);
+@@ -607,6 +657,7 @@ export function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.ma
+     if (lo <= -1) return [[phi + near, phi + TAU - near]];
+     return [[phi + near, phi + far], [phi - far, phi - near]];
+   };
++  const visible = part ? (ranges) => clipArcs(arcsOf(ranges).map(([lo, hi]) => ({ from: lo, to: hi })), from, to).map((arc) => [arc.from, arc.to]) : arcsOf;
+   const along = (s, r, [from, to]) => {
+     const count = Math.max(2, Math.ceil(((to - from) * Math.max(r, 1e-6) * scaleOf(P)) / 1.5));
+     return Array.from({ length: count + 1 }, (_, j) => iso(pointOf(F, s, r, from + ((to - from) * j) / count), P));
+@@ -614,7 +665,7 @@ export function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.ma
+   const creases = [];
+   for (let i = 1; i < m - 1; i++) {
+     if (meridian[i][2] || meridian[i][1] <= 1e-9) continue;
+-    for (const arc of arcsOf([rangeOf(i - 1), rangeOf(i)])) creases.push(pathOf(along(meridian[i][0], meridian[i][1], arc)));
++    for (const arc of visible([rangeOf(i - 1), rangeOf(i)])) creases.push(pathOf(along(meridian[i][0], meridian[i][1], arc)));
+   }
+   let bevelPath = "";
+   if (bevel > 0 && m > 2) {
+@@ -623,14 +674,52 @@ export function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.ma
+     if (meridian[m - 1][1] <= 1e-9) ends.push([m - 2, m - 2, m - 3]);
+     for (const [cap, rim, side] of ends) {
+       const [s, r] = meridian[rim];
+-      for (const arc of arcsOf([rangeOf(cap), rangeOf(side)])) {
++      for (const arc of visible([rangeOf(cap), rangeOf(side)])) {
+         const inset = along(s, Math.max(0, r - bevel), arc);
+         const edge = along(s, r, arc);
+         bevelPath += pathOf([edge[0], ...inset.slice(1, -1), edge[edge.length - 1]]);
+       }
+     }
+   }
+-  const { fill: fillPath, outline } = outlineOf(meridian, F, P, { steps: n, fill, hole, rims, smooth, waist, all });
++  let fillPath;
++  let outline;
++  if (part) {
++    const shape = shapeOf(meridian, P, smooth);
++    const last = shape.length - 1;
++    const strips = shape.slice(0, -1).map((_, i) => visible([rangeOf(i, shape)]));
++    const cuts = [[from, -1], [to, 1]].map(([angle, sign]) => {
++      const normal = mul3(tangentOf(F, angle), sign);
++      return { angle, seen: dot3(normal, V) > 1e-6, band: bandOf(dot3(normal, L)) };
++    });
++    const flush = Math.abs(to - from - Math.PI) < 1e-9;
++    const edges = [];
++    const generator = (i, angle) => pathOf([i, i + 1].map((k) => iso(pointOf(F, shape[k][0], shape[k][1], angle), P)));
++    strips.forEach((arcs, i) => {
++      for (const [lo, hi] of arcs) {
++        if (lo > from + 1e-9 || !cuts[0].seen) edges.push(generator(i, lo));
++        if (hi < to - 1e-9 || !cuts[1].seen) edges.push(generator(i, hi));
++      }
++    });
++    const keepsEnd = (k) => rims === "all" || rims === "ends" || rims === (k === 0 ? "first" : "last");
++    shape.forEach(([s, r], k) => {
++      if (r <= 1e-9) return;
++      const before = k > 0 ? strips[k - 1] : [];
++      const after = k < last ? strips[k] : [];
++      const arcs = k === 0 || k === last ? (keepsEnd(k) ? [...before, ...after] : []) : [...minusArcs(before, after), ...minusArcs(after, before)];
++      for (const arc of arcs) edges.push(pathOf(along(s, r, arc)));
++    });
++    for (const { angle, seen, band } of cuts) {
++      if (!seen) continue;
++      const face = shape.map(([s, r]) => iso(pointOf(F, s, r, angle), P));
++      const d = pathOf(oriented(face), true);
++      buckets[band].push(d);
++      all.push(d);
++      const kept = face.map((_, k) => !(flush && shape[k][1] <= 1e-9 && shape[(k + 1) % face.length][1] <= 1e-9));
++      edges.push(kept.every(Boolean) ? pathOf(face, true) : runsOf(kept).map((run) => pathOf(run.map((k) => face[k]))).join(""));
++    }
++    fillPath = all.join("");
++    outline = edges.join("");
++  } else ({ fill: fillPath, outline } = outlineOf(meridian, F, P, { steps: n, fill, hole, rims, smooth, waist, all }));
+   return {
+     fill: fillPath,
+     outline,
+diff --git a/references/kit.md b/references/kit.md
+index fee710a..39925d3 100644
+--- a/references/kit.md
++++ b/references/kit.md
+@@ -172,6 +172,7 @@ From `kit/react/live.tsx`, which is `"use client"`:
+ | Function | What it does |
+ |---|---|
+ | `lathe(meridian, F, P, { steps = stepsFor(rMax, 32, 160, scaleOf(P)), fill = "auto", hole = null, bevel = 0, rims = "all", smooth = "auto", waist = 0.5 })` | The general solid of revolution. Facets are shaded in four tones by the kit's light and bucketed like `extrude`. `fill: "auto"` uses the hull of the rings unless the true silhouette lies more than `waist` px inside it (a throat, a spool), and then fills and outlines the body with `silhouettePoints` on both sides joined by the visible end arcs (only when the silhouette is unbroken along the whole side: a body whose surface faces you head-on somewhere, like a valve bulge that leaves its neck at a right angle, falls back to the hull, because joining the broken pieces drew stray triangles across it); `"surface"` forces that, `"hull"` forces the hull; `fill: "facets"` fills only the visible facets and draws no outline, which you need for a concave or open shape seen from inside. `hole: [s, r]` cuts a round hole into the fill and outline, for the end of a tube. `bevel` adds a highlight inset from a closed cap (a meridian end at `r = 0`). `rims` keeps the outline on the end rings: `"all"`, `"none"`, `"first"`, `"last"` or `"ends"`. Only hull edges along the first or last ring are dropped; edges along interior rings always stay, so the side silhouette stays whole. |
++| `lathe(…, { from, to })` | Turns only the part of the revolution between two angles (the same `from` and `to` as `arcOf`, in radians from `F.u` toward `F.v`, with `to − from` under a full turn), and draws the flat faces where it was cut open. Each cut face is the profile itself laid in the plane at that angle, so close the profile, as `solidOf` does along the axis, and a wedge out of a ball, a half capsule or a quarter cut from a cylinder shows its section. A face is drawn only when it faces the viewer, and a half turn (`to − from = π`) draws its two faces as one plane with no axis edge between them. Shading is always the analytic `smooth` one, `fill` and `hole` do not apply (`hole` throws), and `rims`, `bevel` and creases follow the part. Put marks on a cut face with `pointOf(F, s, r, from)` or `pointOf(F, s, r, to)`. For a ball give `smooth: { slope }` and 40 or more knots (`sphereOf` is whole balls only). Faces and surface are bucketed by tone and not sorted by depth, so a face that the viewer sees but the rest of the body partly hides is still painted over it: a ball with a quarter cut out, seen from the far side of the notch, has 3.7% of its pixels in the face's tone. Look into the notch. A hollow profile (a shell) measured 3.6% of pixels off, and the cause is not isolated. |
+ | `solidOf(profile, F, P, options)` | Closes a profile to the axis at both ends and picks `steps` from the largest radius. It is the usual way to make a turned part: `G.solidOf([[0, 12], [6, 12], [8, 9, 1], [20, 9]], F, P)`. |
+ | `bandOfProfile(profile, F, P, options)` | An open band with no caps, for one stretch of a long body that is split into depth-sorted pieces. Prefer `bandsOf`, which cuts the whole body at once. |
+ | `bandsOf(profile, cuts, F, P, { slope, radius, steps, rows = 6, rims = "none", fill = "auto", samples = 72 })` | One curved body (`s` rising along `profile`) cut at the `s` values in `cuts` into depth-sortable bands that share one normal field, one surface and one facet count. Pass the analytic `slope` and `radius`, or neither: then `profileCurve(profile)` makes them from the profile (the monotone Hermite through each run of smooth knots, straight elsewhere), so no band ever has its own end slopes. Returns `{ bands, sidesOf, radius, slope, steps, s0, s1 }`. Each band is `{ s0, s1, profile, paths, outline, seam }`: `paths` is ready for `solidSvg` with its outline cleared, `outline` is the band's own chord outline if you need it (the last band of the Raptor skirt keeps it), `seam` is the visible arc where it meets the next band (put it in `inner`), and `profile` is what to record for the audit (`A.solid(F, band.profile, { radius })`). `sidesOf(from = s0, to = s1, { ends = false \| true \| "first" \| "last", count = samples })` returns `{ d, points }`: the body's two analytic side edges over that span as one path, optionally with the visible rim arcs at its ends, plus their 3D points to record (`points.map((list) => A.tube(list, 0.4 / scale))`). Draw `d` as one item with a small depth bias over the bands, so the outline is one continuous curve. |
+diff --git a/scripts/lathe-partial-turn.test.mjs b/scripts/lathe-partial-turn.test.mjs
+new file mode 100644
+index 0000000..66f316d
+--- /dev/null
++++ b/scripts/lathe-partial-turn.test.mjs
+@@ -0,0 +1,48 @@
++import assert from "node:assert/strict";
++import test from "node:test";
++import { fitProjection } from "../kit/iso-kit.mjs";
++import { frameOf, lathe, pointOf } from "../kit/lathe.mjs";
++import { compareWithRayCast } from "./lathe-truth.mjs";
++
++const TAU = Math.PI * 2;
++const UP = frameOf([0, 0, 0], [0, 0, 1], [1, 0, 0], [0, 1, 0]);
++const BALL = 40;
++
++const ballMeridian = (count = 60) => {
++  const reach = BALL * 0.9995;
++  const knots = Array.from({ length: count + 1 }, (_, i) => {
++    const s = -reach * Math.cos((i / count) * Math.PI);
++    return [s, Math.sqrt(BALL * BALL - s * s), 1];
++  });
++  return [[-reach, 0], ...knots, [reach, 0]];
++};
++const ballSlope = (s) => -s / Math.sqrt(Math.max(1e-9, BALL * BALL - s * s));
++const cylinderMeridian = [[-30, 0], [-30, 26], [30, 26], [30, 0]];
++
++const projectionFor = (meridian) => fitProjection(meridian.flatMap(([s, r]) => Array.from({ length: 24 }, (_, j) => pointOf(UP, s, r, (j / 24) * TAU))), 360, 300, { pad: 26, azimuth: 45, elevation: 28 });
++
++for (const [name, meridian, options, from, to] of [
++  ["a ball with a quarter cut out", ballMeridian(), { smooth: { slope: ballSlope } }, Math.PI / 2, TAU],
++  ["a ball cut in half", ballMeridian(), { smooth: { slope: ballSlope } }, 0, Math.PI],
++  ["a cylinder with a quarter cut out", cylinderMeridian, {}, Math.PI / 2, TAU],
++]) {
++  test(`${name} covers and shades the pixels a ray cast hits`, () => {
++    const P = projectionFor(meridian);
++    const paths = lathe(meridian, UP, P, { ...options, from, to });
++    const { interior, coverage, tone } = compareWithRayCast({ paths, meridian, F: UP, from, to, P, width: 360, height: 300, step: 4 });
++    assert.ok(interior > 3000);
++    assert.equal(coverage, 0);
++    assert.ok(tone / interior < 0.001, `${tone} of ${interior} pixels have the wrong tone`);
++  });
++}
++
++test("a full turn given as from and to is the same drawing as no arguments", () => {
++  const P = projectionFor(cylinderMeridian);
++  assert.deepEqual(lathe(cylinderMeridian, UP, P, { from: 0, to: TAU }), lathe(cylinderMeridian, UP, P));
++});
++
++test("from must be below to, and a hole does not combine with a partial turn", () => {
++  const P = projectionFor(cylinderMeridian);
++  assert.throws(() => lathe(cylinderMeridian, UP, P, { from: 2, to: 1 }), /from must be below to/);
++  assert.throws(() => lathe(cylinderMeridian, UP, P, { from: 0, to: 2, hole: [0, 5] }), /hole/);
++});
+diff --git a/scripts/lathe-truth.mjs b/scripts/lathe-truth.mjs
+new file mode 100644
+index 0000000..6198389
+--- /dev/null
++++ b/scripts/lathe-truth.mjs
+@@ -0,0 +1,168 @@
++import { cameraOf } from "../kit/iso-kit.mjs";
++import { add3, bandOf, dot3, lightOf, mul3, radialOf, sub3, tangentOf, unit3, viewOf } from "../kit/lathe.mjs";
++
++const TAU = Math.PI * 2;
++const wrap = (angle) => ((angle % TAU) + TAU) % TAU;
++
++function polygonsOf(d) {
++  return d.split("M").filter(Boolean).map((chunk) => {
++    const points = [...chunk.replace("Z", "").matchAll(/L?(-?[\d.]+) (-?[\d.]+)/g)].map((match) => [Number(match[1]), Number(match[2])]);
++    const xs = points.map(([x]) => x);
++    const ys = points.map(([, y]) => y);
++    return { points, box: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] };
++  });
++}
++
++function contains({ points, box }, x, y) {
++  if (x < box[0] || x > box[2] || y < box[1] || y > box[3]) return false;
++  let inside = false;
++  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
++    if (points[i][1] > y !== points[j][1] > y && x < ((points[j][0] - points[i][0]) * (y - points[i][1])) / (points[j][1] - points[i][1]) + points[i][0]) inside = !inside;
++  }
++  return inside;
++}
++
++function paintedTone(paths) {
++  const layers = [...paths.shades, paths.top].map(polygonsOf);
++  return (x, y) => layers.reduce((tone, polygons, band) => (polygons.some((polygon) => contains(polygon, x, y)) ? band : tone), -1);
++}
++
++function rayCaster(meridian, F, from, to, P) {
++  const part = to - from < TAU - 1e-9;
++  const V = viewOf(P);
++  const L = lightOf(P);
++  const { sinA, cosA, sinE, cosE, k } = cameraOf(P);
++  const across = [sinA, -cosA, 0];
++  const up = [cosA * sinE, sinA * sinE, -cosE];
++  const count = meridian.length;
++  const inPolygon = (s, r) => {
++    let inside = false;
++    for (let i = 0, j = count - 1; i < count; j = i++) {
++      const [si, ri] = meridian[i];
++      const [sj, rj] = meridian[j];
++      if (ri > r !== rj > r && s < ((sj - si) * (r - ri)) / (rj - ri) + si) inside = !inside;
++    }
++    return inside;
++  };
++  const local = (p) => {
++    const rel = sub3(p, F.o);
++    const u = dot3(rel, F.u);
++    const v = dot3(rel, F.v);
++    return [dot3(rel, F.a), Math.hypot(u, v), Math.atan2(v, u)];
++  };
++  const solid = (p) => {
++    const [s, r, angle] = local(p);
++    return (!part || wrap(angle - from) <= to - from) && inPolygon(s, r);
++  };
++  const edgeNormal = (i) => {
++    const [s0, r0] = meridian[i];
++    const [s1, r1] = meridian[(i + 1) % count];
++    const length = Math.hypot(s1 - s0, r1 - r0) || 1;
++    return [-(r1 - r0) / length, (s1 - s0) / length];
++  };
++  const vertexNormal = (i, own) => {
++    if (!meridian[i][2]) return own;
++    const a = edgeNormal((i + count - 1) % count);
++    const b = edgeNormal(i);
++    const length = Math.hypot(a[0] + b[0], a[1] + b[1]) || 1;
++    return [(a[0] + b[0]) / length, (a[1] + b[1]) / length];
++  };
++  const nearestEdge = (s, r) => {
++    let best = { distance: Infinity };
++    for (let i = 0; i < count; i++) {
++      const [s0, r0] = meridian[i];
++      const [s1, r1] = meridian[(i + 1) % count];
++      const ds = s1 - s0;
++      const dr = r1 - r0;
++      const t = Math.max(0, Math.min(1, ((s - s0) * ds + (r - r0) * dr) / (ds * ds + dr * dr || 1)));
++      const distance = Math.hypot(s - s0 - ds * t, r - r0 - dr * t);
++      if (distance < best.distance) best = { distance, i, t };
++    }
++    return best;
++  };
++  const surfaceNormal = (s, r, angle, { i, t }) => {
++    const own = edgeNormal(i);
++    const a = vertexNormal(i, own);
++    const b = vertexNormal((i + 1) % count, own);
++    const x = a[0] + (b[0] - a[0]) * t;
++    const y = a[1] + (b[1] - a[1]) * t;
++    const length = Math.hypot(x, y) || 1;
++    const out = inPolygon(s + (x / length) * 0.02, r + (y / length) * 0.02) ? -1 : 1;
++    return add3(mul3(F.a, (out * x) / length), mul3(radialOf(F, angle), (out * y) / length));
++  };
++  return (X, Y) => {
++    const dx = (X - P.origin[0]) / k;
++    const dy = (Y - P.origin[1]) / k;
++    const base = [0, 1, 2].map((axis) => across[axis] * dx + up[axis] * dy);
++    const at = (t) => [0, 1, 2].map((axis) => base[axis] + V[axis] * t);
++    let near = null;
++    for (let t = 160; t > -160; t--) {
++      if (solid(at(t))) {
++        near = t;
++        break;
++      }
++    }
++    if (near === null) return { hit: false };
++    let outside = near + 1;
++    let inside = near;
++    for (let i = 0; i < 14; i++) {
++      const mid = (outside + inside) / 2;
++      if (solid(at(mid))) inside = mid;
++      else outside = mid;
++    }
++    const [s, r, angle] = local(at(inside));
++    const edge = nearestEdge(s, r);
++    let normal = null;
++    let cutDistance = Infinity;
++    if (part) {
++      const gap = (turned) => (turned <= Math.PI / 2 ? r * Math.sin(turned) : r);
++      const intoPart = wrap(angle - from);
++      const fromGap = gap(intoPart);
++      const toGap = gap(to - from - intoPart);
++      cutDistance = Math.min(fromGap, toGap);
++      normal = fromGap < toGap ? mul3(tangentOf(F, from), -1) : tangentOf(F, to);
++    }
++    if (cutDistance >= edge.distance) normal = surfaceNormal(s, r, angle, edge);
++    return { hit: true, tone: bandOf(dot3(unit3(normal), L)) };
++  };
++}
++
++export function compareWithRayCast({ paths, meridian, F, from, to, P, width, height, step = 2 }) {
++  const paint = paintedTone(paths);
++  const cast = rayCaster(meridian, F, from, to, P);
++  const columns = Math.floor(width / step);
++  const rows = Math.floor(height / step);
++  const truth = [];
++  for (let j = 0; j < rows; j++) for (let i = 0; i < columns; i++) truth.push(cast(i * step, j * step));
++  const same = (a, b) => a.hit === b.hit && (!a.hit || a.tone === b.tone);
++  const cells = [];
++  let interior = 0;
++  let coverage = 0;
++  let tone = 0;
++  for (let j = 0; j < rows; j++) {
++    for (let i = 0; i < columns; i++) {
++      const here = truth[j * columns + i];
++      let edge = false;
++      for (let dj = -1; dj <= 1; dj++) {
++        for (let di = -1; di <= 1; di++) {
++          const other = truth[(j + dj) * columns + i + di];
++          if (j + dj >= 0 && j + dj < rows && i + di >= 0 && i + di < columns && !same(here, other)) edge = true;
++        }
++      }
++      if (edge) {
++        cells.push("edge");
++        continue;
++      }
++      interior++;
++      const painted = paint(i * step, j * step);
++      if (here.hit !== painted >= 0) {
++        coverage++;
++        cells.push("coverage");
++      } else if (here.hit && here.tone !== painted) {
++        tone++;
++        cells.push("tone");
++      } else cells.push(here.hit ? "match" : "empty");
++    }
++  }
++  return { interior, coverage, tone, columns, rows, cells };
++}

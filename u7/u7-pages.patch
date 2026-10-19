@@ -1,0 +1,438 @@
+diff --git a/examples/arcade-cabinet/arcade-cabinet-light.html b/examples/arcade-cabinet/arcade-cabinet-light.html
+index 0a2c9fc..764b201 100644
+--- a/examples/arcade-cabinet/arcade-cabinet-light.html
++++ b/examples/arcade-cabinet/arcade-cabinet-light.html
+@@ -967,6 +967,50 @@ function groupsOf(keys) {
+   return out;
+ }
+ 
++function openGroupsOf(keys) {
++  const out = [];
++  let current = null;
++  keys.forEach((key, index) => {
++    if (key === null) current = null;
++    else if (current && current.key === key) current.run.push(index + 1);
++    else out.push((current = { key, run: [index, index + 1] }));
++  });
++  return out;
++}
++
++function clipArcs(arcs, from, to) {
++  const pieces = [];
++  for (const arc of arcs) {
++    for (let turn = -2; turn <= 2; turn++) {
++      const lo = Math.max(arc.from + turn * TAU, from);
++      const hi = Math.min(arc.to + turn * TAU, to);
++      if (hi - lo > 1e-9) pieces.push({ ...arc, from: lo, to: hi });
++    }
++  }
++  pieces.sort((a, b) => a.from - b.from);
++  const merged = [];
++  for (const piece of pieces) {
++    const last = merged[merged.length - 1];
++    if (last && last.tone === piece.tone && piece.from - last.to < 1e-9) last.to = piece.to;
++    else merged.push(piece);
++  }
++  return merged;
++}
++
++function minusArcs(arcs, taken) {
++  return arcs.flatMap(([lo, hi]) => {
++    const out = [];
++    let at = lo;
++    for (const [from, to] of taken) {
++      if (to <= at || from >= hi) continue;
++      if (from > at) out.push([at, from]);
++      at = Math.max(at, to);
++    }
++    if (hi > at) out.push([at, hi]);
++    return out;
++  });
++}
++
+ const stepsFor = (radius, least = 16, most = 112, scale = 0) => Math.max(least, Math.min(most, scale ? Math.ceil((TAU * radius * scale) / 3) : Math.round((radius * 1.3) / 4) * 4));
+ 
+ function chains(edges) {
+@@ -1117,7 +1161,8 @@ function curved(meridian, P, segments, { error = 0.2, depth = 6 } = {}) {
+   return out;
+ }
+ 
+-function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, steps = 48, error = 0.35, depth: deepest = 8, fineness = 0.1 } = {}) {
++function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, steps = 48, error = 0.35, depth: deepest = 8, fineness = 0.1, from = 0, to = TAU } = {}) {
++  const part = to - from < TAU - 1e-9;
+   const V = viewOf(P);
+   const L = lightOf(P);
+   const view = { a: dot3(F.a, V), flat: Math.hypot(dot3(F.u, V), dot3(F.v, V)), phi: Math.atan2(dot3(F.v, V), dot3(F.u, V)) };
+@@ -1177,11 +1222,12 @@ function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, ste
+   const levelOf = (i, u) => {
+     const [nr, na] = normalAt(i, u);
+     const groups = new Map();
+-    for (const arc of labelledArcs(nr, na, view, light, faces[i][0], faces[i][1])) {
++    const arcs = labelledArcs(nr, na, view, light, faces[i][0], faces[i][1]);
++    for (const arc of part ? clipArcs(arcs, from, to) : arcs) {
+       if (!groups.has(arc.tone)) groups.set(arc.tone, []);
+       groups.get(arc.tone).push(arc);
+     }
+-    for (const list of groups.values()) list.sort((x, y) => centreOf(x, light.phi) - centreOf(y, light.phi));
++    for (const list of groups.values()) list.sort(part ? (x, y) => x.from - y.from : (x, y) => centreOf(x, light.phi) - centreOf(y, light.phi));
+     return { i, u, groups };
+   };
+   const same = (x, y) => {
+@@ -1190,6 +1236,7 @@ function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, ste
+     return true;
+   };
+   const align = (reference, arc) => {
++    if (part) return arc;
+     const out = { ...arc };
+     const centre = (reference.from + reference.to) / 2;
+     while ((out.from + out.to) / 2 - centre > Math.PI) {
+@@ -1362,8 +1409,10 @@ function surfaceOf(side, F, P, rims, { samples = 96, slope = null } = {}) {
+ 
+ const softOf = (meridian) => meridian.some((point) => Boolean(point[2]));
+ 
+-function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r]) => r)), 32, 160, scaleOf(P)), fill = "auto", hole = null, bevel = 0, rims = "all", smooth: asked = "auto", waist = 0.5 } = {}) {
+-  const smooth = asked === "auto" ? softOf(meridian) : asked;
++function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r]) => r)), 32, 160, scaleOf(P)), fill = "auto", hole = null, bevel = 0, rims = "all", smooth: asked = "auto", waist = 0.5, from = 0, to = TAU } = {}) {
++  const part = to - from < TAU - 1e-9;
++  if (part && (to <= from || hole)) throw new Error("lathe: from must be below to, and a hole does not combine with a partial turn");
++  const smooth = part ? (asked && asked !== "auto" ? asked : true) : asked === "auto" ? softOf(meridian) : asked;
+   const V = viewOf(P);
+   const L = lightOf(P);
+   const aV = dot3(F.a, V);
+@@ -1372,13 +1421,14 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+   const aL = dot3(F.a, L);
+   const uL = dot3(F.u, L);
+   const vL = dot3(F.v, L);
+-  const n = steps;
++  const n = part ? Math.max(4, Math.ceil((steps * (to - from)) / TAU)) : steps;
++  const turn = (j) => from + (j / n) * (to - from);
+   const m = meridian.length;
+-  const rings = meridian.map(([s, r]) => Array.from({ length: n }, (_, j) => iso(pointOf(F, s, r, (j / n) * TAU), P)));
++  const rings = meridian.map(([s, r]) => Array.from({ length: part ? n + 1 : n }, (_, j) => iso(pointOf(F, s, r, turn(j)), P)));
+   const midC = [];
+   const midS = [];
+   for (let j = 0; j < n; j++) {
+-    const t = ((j + 0.5) / n) * TAU;
++    const t = turn(j + 0.5);
+     midC.push(Math.cos(t));
+     midS.push(Math.sin(t));
+   }
+@@ -1406,12 +1456,12 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+   }
+   const buckets = [[], [], [], [], []];
+   const all = [];
+-  const smoothed = smooth ? smoothRows(meridian, F, P, { steps, ...(smooth === true ? {} : smooth) }) : null;
++  const smoothed = smooth ? smoothRows(meridian, F, P, { steps, from, to, ...(smooth === true ? {} : smooth) }) : null;
+   if (smoothed) smoothed.forEach((list, tone) => list.forEach((d) => (buckets[tone].push(d), all.push(d))));
+   for (let i = 0; i < m - 1; i++) {
+     if (smoothed && Math.abs(meridian[i + 1][0] - meridian[i][0]) > 1e-9) continue;
+     const keys = seen[i].map((visible, j) => (visible ? tones[i][j] : null));
+-    for (const { key, run } of groupsOf(keys)) {
++    for (const { key, run } of (part ? openGroupsOf : groupsOf)(keys)) {
+       const a = run.map((j) => rings[i][j]);
+       const b = run.map((j) => rings[i + 1][j]).reverse();
+       const d = pathOf(oriented([...a, ...b]), true);
+@@ -1421,9 +1471,9 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+   }
+   const phi = Math.atan2(vV, uV);
+   const flatV = Math.hypot(uV, vV);
+-  const rangeOf = (i) => {
+-    const ds = meridian[i + 1][0] - meridian[i][0];
+-    const dr = meridian[i + 1][1] - meridian[i][1];
++  const rangeOf = (i, points = meridian) => {
++    const ds = points[i + 1][0] - points[i][0];
++    const dr = points[i + 1][1] - points[i][1];
+     if (Math.hypot(ds, dr) < 1e-9) return null;
+     if (Math.abs(ds) < 1e-9 || flatV < 1e-9) return -dr * aV > 1e-9 ? [-1, 1] : null;
+     const c = (dr * aV) / (ds * flatV);
+@@ -1441,6 +1491,7 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+     if (lo <= -1) return [[phi + near, phi + TAU - near]];
+     return [[phi + near, phi + far], [phi - far, phi - near]];
+   };
++  const visible = part ? (ranges) => clipArcs(arcsOf(ranges).map(([lo, hi]) => ({ from: lo, to: hi })), from, to).map((arc) => [arc.from, arc.to]) : arcsOf;
+   const along = (s, r, [from, to]) => {
+     const count = Math.max(2, Math.ceil(((to - from) * Math.max(r, 1e-6) * scaleOf(P)) / 1.5));
+     return Array.from({ length: count + 1 }, (_, j) => iso(pointOf(F, s, r, from + ((to - from) * j) / count), P));
+@@ -1448,7 +1499,7 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+   const creases = [];
+   for (let i = 1; i < m - 1; i++) {
+     if (meridian[i][2] || meridian[i][1] <= 1e-9) continue;
+-    for (const arc of arcsOf([rangeOf(i - 1), rangeOf(i)])) creases.push(pathOf(along(meridian[i][0], meridian[i][1], arc)));
++    for (const arc of visible([rangeOf(i - 1), rangeOf(i)])) creases.push(pathOf(along(meridian[i][0], meridian[i][1], arc)));
+   }
+   let bevelPath = "";
+   if (bevel > 0 && m > 2) {
+@@ -1457,14 +1508,52 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+     if (meridian[m - 1][1] <= 1e-9) ends.push([m - 2, m - 2, m - 3]);
+     for (const [cap, rim, side] of ends) {
+       const [s, r] = meridian[rim];
+-      for (const arc of arcsOf([rangeOf(cap), rangeOf(side)])) {
++      for (const arc of visible([rangeOf(cap), rangeOf(side)])) {
+         const inset = along(s, Math.max(0, r - bevel), arc);
+         const edge = along(s, r, arc);
+         bevelPath += pathOf([edge[0], ...inset.slice(1, -1), edge[edge.length - 1]]);
+       }
+     }
+   }
+-  const { fill: fillPath, outline } = outlineOf(meridian, F, P, { steps: n, fill, hole, rims, smooth, waist, all });
++  let fillPath;
++  let outline;
++  if (part) {
++    const shape = shapeOf(meridian, P, smooth);
++    const last = shape.length - 1;
++    const strips = shape.slice(0, -1).map((_, i) => visible([rangeOf(i, shape)]));
++    const cuts = [[from, -1], [to, 1]].map(([angle, sign]) => {
++      const normal = mul3(tangentOf(F, angle), sign);
++      return { angle, seen: dot3(normal, V) > 1e-6, band: bandOf(dot3(normal, L)) };
++    });
++    const flush = Math.abs(to - from - Math.PI) < 1e-9;
++    const edges = [];
++    const generator = (i, angle) => pathOf([i, i + 1].map((k) => iso(pointOf(F, shape[k][0], shape[k][1], angle), P)));
++    strips.forEach((arcs, i) => {
++      for (const [lo, hi] of arcs) {
++        if (lo > from + 1e-9 || !cuts[0].seen) edges.push(generator(i, lo));
++        if (hi < to - 1e-9 || !cuts[1].seen) edges.push(generator(i, hi));
++      }
++    });
++    const keepsEnd = (k) => rims === "all" || rims === "ends" || rims === (k === 0 ? "first" : "last");
++    shape.forEach(([s, r], k) => {
++      if (r <= 1e-9) return;
++      const before = k > 0 ? strips[k - 1] : [];
++      const after = k < last ? strips[k] : [];
++      const arcs = k === 0 || k === last ? (keepsEnd(k) ? [...before, ...after] : []) : [...minusArcs(before, after), ...minusArcs(after, before)];
++      for (const arc of arcs) edges.push(pathOf(along(s, r, arc)));
++    });
++    for (const { angle, seen, band } of cuts) {
++      if (!seen) continue;
++      const face = shape.map(([s, r]) => iso(pointOf(F, s, r, angle), P));
++      const d = pathOf(oriented(face), true);
++      buckets[band].push(d);
++      all.push(d);
++      const kept = face.map((_, k) => !(flush && shape[k][1] <= 1e-9 && shape[(k + 1) % face.length][1] <= 1e-9));
++      edges.push(kept.every(Boolean) ? pathOf(face, true) : runsOf(kept).map((run) => pathOf(run.map((k) => face[k]))).join(""));
++    }
++    fillPath = all.join("");
++    outline = edges.join("");
++  } else ({ fill: fillPath, outline } = outlineOf(meridian, F, P, { steps: n, fill, hole, rims, smooth, waist, all }));
+   return {
+     fill: fillPath,
+     outline,
+diff --git a/examples/arcade-cabinet/arcade-cabinet.html b/examples/arcade-cabinet/arcade-cabinet.html
+index d8db7ef..2577402 100644
+--- a/examples/arcade-cabinet/arcade-cabinet.html
++++ b/examples/arcade-cabinet/arcade-cabinet.html
+@@ -967,6 +967,50 @@ function groupsOf(keys) {
+   return out;
+ }
+ 
++function openGroupsOf(keys) {
++  const out = [];
++  let current = null;
++  keys.forEach((key, index) => {
++    if (key === null) current = null;
++    else if (current && current.key === key) current.run.push(index + 1);
++    else out.push((current = { key, run: [index, index + 1] }));
++  });
++  return out;
++}
++
++function clipArcs(arcs, from, to) {
++  const pieces = [];
++  for (const arc of arcs) {
++    for (let turn = -2; turn <= 2; turn++) {
++      const lo = Math.max(arc.from + turn * TAU, from);
++      const hi = Math.min(arc.to + turn * TAU, to);
++      if (hi - lo > 1e-9) pieces.push({ ...arc, from: lo, to: hi });
++    }
++  }
++  pieces.sort((a, b) => a.from - b.from);
++  const merged = [];
++  for (const piece of pieces) {
++    const last = merged[merged.length - 1];
++    if (last && last.tone === piece.tone && piece.from - last.to < 1e-9) last.to = piece.to;
++    else merged.push(piece);
++  }
++  return merged;
++}
++
++function minusArcs(arcs, taken) {
++  return arcs.flatMap(([lo, hi]) => {
++    const out = [];
++    let at = lo;
++    for (const [from, to] of taken) {
++      if (to <= at || from >= hi) continue;
++      if (from > at) out.push([at, from]);
++      at = Math.max(at, to);
++    }
++    if (hi > at) out.push([at, hi]);
++    return out;
++  });
++}
++
+ const stepsFor = (radius, least = 16, most = 112, scale = 0) => Math.max(least, Math.min(most, scale ? Math.ceil((TAU * radius * scale) / 3) : Math.round((radius * 1.3) / 4) * 4));
+ 
+ function chains(edges) {
+@@ -1117,7 +1161,8 @@ function curved(meridian, P, segments, { error = 0.2, depth = 6 } = {}) {
+   return out;
+ }
+ 
+-function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, steps = 48, error = 0.35, depth: deepest = 8, fineness = 0.1 } = {}) {
++function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, steps = 48, error = 0.35, depth: deepest = 8, fineness = 0.1, from = 0, to = TAU } = {}) {
++  const part = to - from < TAU - 1e-9;
+   const V = viewOf(P);
+   const L = lightOf(P);
+   const view = { a: dot3(F.a, V), flat: Math.hypot(dot3(F.u, V), dot3(F.v, V)), phi: Math.atan2(dot3(F.v, V), dot3(F.u, V)) };
+@@ -1177,11 +1222,12 @@ function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, ste
+   const levelOf = (i, u) => {
+     const [nr, na] = normalAt(i, u);
+     const groups = new Map();
+-    for (const arc of labelledArcs(nr, na, view, light, faces[i][0], faces[i][1])) {
++    const arcs = labelledArcs(nr, na, view, light, faces[i][0], faces[i][1]);
++    for (const arc of part ? clipArcs(arcs, from, to) : arcs) {
+       if (!groups.has(arc.tone)) groups.set(arc.tone, []);
+       groups.get(arc.tone).push(arc);
+     }
+-    for (const list of groups.values()) list.sort((x, y) => centreOf(x, light.phi) - centreOf(y, light.phi));
++    for (const list of groups.values()) list.sort(part ? (x, y) => x.from - y.from : (x, y) => centreOf(x, light.phi) - centreOf(y, light.phi));
+     return { i, u, groups };
+   };
+   const same = (x, y) => {
+@@ -1190,6 +1236,7 @@ function smoothRows(meridian, F, P, { rows = 6, slope = null, radius = null, ste
+     return true;
+   };
+   const align = (reference, arc) => {
++    if (part) return arc;
+     const out = { ...arc };
+     const centre = (reference.from + reference.to) / 2;
+     while ((out.from + out.to) / 2 - centre > Math.PI) {
+@@ -1362,8 +1409,10 @@ function surfaceOf(side, F, P, rims, { samples = 96, slope = null } = {}) {
+ 
+ const softOf = (meridian) => meridian.some((point) => Boolean(point[2]));
+ 
+-function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r]) => r)), 32, 160, scaleOf(P)), fill = "auto", hole = null, bevel = 0, rims = "all", smooth: asked = "auto", waist = 0.5 } = {}) {
+-  const smooth = asked === "auto" ? softOf(meridian) : asked;
++function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r]) => r)), 32, 160, scaleOf(P)), fill = "auto", hole = null, bevel = 0, rims = "all", smooth: asked = "auto", waist = 0.5, from = 0, to = TAU } = {}) {
++  const part = to - from < TAU - 1e-9;
++  if (part && (to <= from || hole)) throw new Error("lathe: from must be below to, and a hole does not combine with a partial turn");
++  const smooth = part ? (asked && asked !== "auto" ? asked : true) : asked === "auto" ? softOf(meridian) : asked;
+   const V = viewOf(P);
+   const L = lightOf(P);
+   const aV = dot3(F.a, V);
+@@ -1372,13 +1421,14 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+   const aL = dot3(F.a, L);
+   const uL = dot3(F.u, L);
+   const vL = dot3(F.v, L);
+-  const n = steps;
++  const n = part ? Math.max(4, Math.ceil((steps * (to - from)) / TAU)) : steps;
++  const turn = (j) => from + (j / n) * (to - from);
+   const m = meridian.length;
+-  const rings = meridian.map(([s, r]) => Array.from({ length: n }, (_, j) => iso(pointOf(F, s, r, (j / n) * TAU), P)));
++  const rings = meridian.map(([s, r]) => Array.from({ length: part ? n + 1 : n }, (_, j) => iso(pointOf(F, s, r, turn(j)), P)));
+   const midC = [];
+   const midS = [];
+   for (let j = 0; j < n; j++) {
+-    const t = ((j + 0.5) / n) * TAU;
++    const t = turn(j + 0.5);
+     midC.push(Math.cos(t));
+     midS.push(Math.sin(t));
+   }
+@@ -1406,12 +1456,12 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+   }
+   const buckets = [[], [], [], [], []];
+   const all = [];
+-  const smoothed = smooth ? smoothRows(meridian, F, P, { steps, ...(smooth === true ? {} : smooth) }) : null;
++  const smoothed = smooth ? smoothRows(meridian, F, P, { steps, from, to, ...(smooth === true ? {} : smooth) }) : null;
+   if (smoothed) smoothed.forEach((list, tone) => list.forEach((d) => (buckets[tone].push(d), all.push(d))));
+   for (let i = 0; i < m - 1; i++) {
+     if (smoothed && Math.abs(meridian[i + 1][0] - meridian[i][0]) > 1e-9) continue;
+     const keys = seen[i].map((visible, j) => (visible ? tones[i][j] : null));
+-    for (const { key, run } of groupsOf(keys)) {
++    for (const { key, run } of (part ? openGroupsOf : groupsOf)(keys)) {
+       const a = run.map((j) => rings[i][j]);
+       const b = run.map((j) => rings[i + 1][j]).reverse();
+       const d = pathOf(oriented([...a, ...b]), true);
+@@ -1421,9 +1471,9 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+   }
+   const phi = Math.atan2(vV, uV);
+   const flatV = Math.hypot(uV, vV);
+-  const rangeOf = (i) => {
+-    const ds = meridian[i + 1][0] - meridian[i][0];
+-    const dr = meridian[i + 1][1] - meridian[i][1];
++  const rangeOf = (i, points = meridian) => {
++    const ds = points[i + 1][0] - points[i][0];
++    const dr = points[i + 1][1] - points[i][1];
+     if (Math.hypot(ds, dr) < 1e-9) return null;
+     if (Math.abs(ds) < 1e-9 || flatV < 1e-9) return -dr * aV > 1e-9 ? [-1, 1] : null;
+     const c = (dr * aV) / (ds * flatV);
+@@ -1441,6 +1491,7 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+     if (lo <= -1) return [[phi + near, phi + TAU - near]];
+     return [[phi + near, phi + far], [phi - far, phi - near]];
+   };
++  const visible = part ? (ranges) => clipArcs(arcsOf(ranges).map(([lo, hi]) => ({ from: lo, to: hi })), from, to).map((arc) => [arc.from, arc.to]) : arcsOf;
+   const along = (s, r, [from, to]) => {
+     const count = Math.max(2, Math.ceil(((to - from) * Math.max(r, 1e-6) * scaleOf(P)) / 1.5));
+     return Array.from({ length: count + 1 }, (_, j) => iso(pointOf(F, s, r, from + ((to - from) * j) / count), P));
+@@ -1448,7 +1499,7 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+   const creases = [];
+   for (let i = 1; i < m - 1; i++) {
+     if (meridian[i][2] || meridian[i][1] <= 1e-9) continue;
+-    for (const arc of arcsOf([rangeOf(i - 1), rangeOf(i)])) creases.push(pathOf(along(meridian[i][0], meridian[i][1], arc)));
++    for (const arc of visible([rangeOf(i - 1), rangeOf(i)])) creases.push(pathOf(along(meridian[i][0], meridian[i][1], arc)));
+   }
+   let bevelPath = "";
+   if (bevel > 0 && m > 2) {
+@@ -1457,14 +1508,52 @@ function lathe(meridian, F, P, { steps = stepsFor(Math.max(...meridian.map(([, r
+     if (meridian[m - 1][1] <= 1e-9) ends.push([m - 2, m - 2, m - 3]);
+     for (const [cap, rim, side] of ends) {
+       const [s, r] = meridian[rim];
+-      for (const arc of arcsOf([rangeOf(cap), rangeOf(side)])) {
++      for (const arc of visible([rangeOf(cap), rangeOf(side)])) {
+         const inset = along(s, Math.max(0, r - bevel), arc);
+         const edge = along(s, r, arc);
+         bevelPath += pathOf([edge[0], ...inset.slice(1, -1), edge[edge.length - 1]]);
+       }
+     }
+   }
+-  const { fill: fillPath, outline } = outlineOf(meridian, F, P, { steps: n, fill, hole, rims, smooth, waist, all });
++  let fillPath;
++  let outline;
++  if (part) {
++    const shape = shapeOf(meridian, P, smooth);
++    const last = shape.length - 1;
++    const strips = shape.slice(0, -1).map((_, i) => visible([rangeOf(i, shape)]));
++    const cuts = [[from, -1], [to, 1]].map(([angle, sign]) => {
++      const normal = mul3(tangentOf(F, angle), sign);
++      return { angle, seen: dot3(normal, V) > 1e-6, band: bandOf(dot3(normal, L)) };
++    });
++    const flush = Math.abs(to - from - Math.PI) < 1e-9;
++    const edges = [];
++    const generator = (i, angle) => pathOf([i, i + 1].map((k) => iso(pointOf(F, shape[k][0], shape[k][1], angle), P)));
++    strips.forEach((arcs, i) => {
++      for (const [lo, hi] of arcs) {
++        if (lo > from + 1e-9 || !cuts[0].seen) edges.push(generator(i, lo));
++        if (hi < to - 1e-9 || !cuts[1].seen) edges.push(generator(i, hi));
++      }
++    });
++    const keepsEnd = (k) => rims === "all" || rims === "ends" || rims === (k === 0 ? "first" : "last");
++    shape.forEach(([s, r], k) => {
++      if (r <= 1e-9) return;
++      const before = k > 0 ? strips[k - 1] : [];
++      const after = k < last ? strips[k] : [];
++      const arcs = k === 0 || k === last ? (keepsEnd(k) ? [...before, ...after] : []) : [...minusArcs(before, after), ...minusArcs(after, before)];
++      for (const arc of arcs) edges.push(pathOf(along(s, r, arc)));
++    });
++    for (const { angle, seen, band } of cuts) {
++      if (!seen) continue;
++      const face = shape.map(([s, r]) => iso(pointOf(F, s, r, angle), P));
++      const d = pathOf(oriented(face), true);
++      buckets[band].push(d);
++      all.push(d);
++      const kept = face.map((_, k) => !(flush && shape[k][1] <= 1e-9 && shape[(k + 1) % face.length][1] <= 1e-9));
++      edges.push(kept.every(Boolean) ? pathOf(face, true) : runsOf(kept).map((run) => pathOf(run.map((k) => face[k]))).join(""));
++    }
++    fillPath = all.join("");
++    outline = edges.join("");
++  } else ({ fill: fillPath, outline } = outlineOf(meridian, F, P, { steps: n, fill, hole, rims, smooth, waist, all }));
+   return {
+     fill: fillPath,
+     outline,
