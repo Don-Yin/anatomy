@@ -15,9 +15,7 @@ function lineEnds({ select = null, tolerance = 1, root: rootSlack = 2, mark = 7,
       const copy = document.createElementNS("http://www.w3.org/2000/svg", "g");
       for (const { name, value } of use.attributes) if (!["href", "xlink:href", "x", "y", "width", "height", "transform"].includes(name)) copy.setAttribute(name, value);
       copy.setAttribute("transform", `${use.getAttribute("transform") || ""} translate(${use.x.baseVal.value} ${use.y.baseVal.value})`);
-      const content = targetOf(use).cloneNode(true);
-      for (const node of [content, ...content.querySelectorAll("[id]")]) node.removeAttribute("id");
-      copy.append(content);
+      copy.append(targetOf(use).cloneNode(true));
       use.replaceWith(copy);
       expanded.push([copy, use]);
     }

@@ -35,6 +35,12 @@ test("line ends on a used outline are rooted", async () => {
   assert.match(result.stdout, /line ends: 0 of 2/);
 });
 
+test("line ends inside an ID-styled used outline remain floating", async () => {
+  const result = await check(`<style>#outline{fill:none;stroke:black}</style><defs><circle id="outline" r="10"/></defs><use href="#outline" x="30" y="50"/><use href="#outline" x="170" y="50"/>${line("M30 50L170 50")}`);
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /line ends: 2 of 2 ends on 1 lines float/);
+});
+
 test("line ends beside a used outline are floating", async () => {
   const result = await check(`<use href="#ring" x="30" y="50"/>${line("M40 20L100 20")}`);
   assert.equal(result.code, 1);
