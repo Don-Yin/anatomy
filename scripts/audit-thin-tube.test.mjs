@@ -27,3 +27,15 @@ test("a thin tube is measured at its true depth, not at the depth of the widened
   assert.equal(overlaps.pairs.length, 1);
   assert.ok(keys[0] > keys[1]);
 });
+
+test("an oblique thin tube stays behind a plate separated from its entire surface", () => {
+  const along = [Math.sqrt(0.99), 0.1, 0];
+  const normal = [0.1, -Math.sqrt(0.99), 0];
+  const items = [
+    { name: "plate", key: 0, shapes: [A.orientedBox(normal.map((v) => v * 0.09), [normal, along, [0, 0, 1]], [0.01, 20, 1])] },
+    { name: "wire", key: 0, shapes: [A.tube([along.map((v) => -20 * v), along.map((v) => 20 * v)], 0.05)] },
+  ];
+  const { overlaps, keys } = solve(items);
+  assert.equal(overlaps.pairs.length, 1);
+  assert.ok(keys[0] > keys[1]);
+});
